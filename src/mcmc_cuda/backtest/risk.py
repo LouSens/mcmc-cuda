@@ -22,11 +22,13 @@ from mcmc_cuda.backtest.costs import CostModel
 
 @dataclass
 class RiskConfig:
-    risk_per_trade: float = 0.01            # fraction of equity per trade
-    max_total_risk_per_idea: float = 0.02   # cap on summed open risk for layered idea
-    max_daily_loss: float = 0.03            # halt new entries when day P&L <= -3%
-    max_consecutive_losses: int = 4         # cooldown trigger
-    cooldown_bars: int = 24                 # bars to skip after streak
+    risk_per_trade: float = 0.005           # 0.5% of equity per trade (prop-firm safe)
+    max_total_risk_per_idea: float = 0.01   # cap on summed open risk for layered idea
+    max_daily_loss: float = 0.02            # halt new entries when day P&L <= -2%
+    max_total_drawdown: float = 0.05        # hard circuit breaker: stop trading if
+                                            # equity drops 5% from peak (prop firm rule)
+    max_consecutive_losses: int = 5         # 38% WR → 5-loss streaks are routine
+    cooldown_bars: int = 16                 # 4 hours on M15; enough to reset, not kill the day
     min_atr_to_cost_ratio: float = 3.0      # ATR must be >= 3x round-trip cost
     min_stop_to_cost_ratio: float = 2.0     # stop distance >= 2x round-trip cost
     max_lot_oz: float = 1e9
@@ -40,20 +42,30 @@ class RiskState:
     starting_equity: float
     current_equity: float = 0.0
     day_start_equity: float = 0.0
+    peak_equity: float = 0.0                # tracks highest equity for DD calc
     current_day: date | None = None
     consecutive_losses: int = 0
     cooldown_remaining: int = 0
     open_idea_risk: float = 0.0             # absolute USD currently at risk on the open idea
+    total_dd_breached: bool = False         # once True, stays True (prop firm = game over)
 
     def __post_init__(self) -> None:
         self.current_equity = self.current_equity or self.starting_equity
         self.day_start_equity = self.day_start_equity or self.starting_equity
+        self.peak_equity = self.peak_equity or self.starting_equity
 
     # ------------------------------------------------------------------
     # Per-bar bookkeeping
     # ------------------------------------------------------------------
     def on_new_bar(self, bar_date: date, equity: float) -> None:
         self.current_equity = equity
+        if equity > self.peak_equity:
+            self.peak_equity = equity
+        # Total drawdown circuit breaker — once tripped, stays tripped.
+        if not self.total_dd_breached and self.peak_equity > 0:
+            dd = (self.peak_equity - equity) / self.peak_equity
+            if dd >= self.cfg.max_total_drawdown:
+                self.total_dd_breached = True
         if self.current_day is None:
             # First bar of the run: anchor the day to the starting equity.
             self.current_day = bar_date
@@ -85,6 +97,8 @@ class RiskState:
     # ------------------------------------------------------------------
     def can_enter(self) -> tuple[bool, str]:
         """Top-level gate: independent of trade specifics."""
+        if self.total_dd_breached:
+            return False, "total_drawdown_breached"
         if self.cooldown_remaining > 0:
             return False, "cooldown"
         if self._daily_loss_breached():

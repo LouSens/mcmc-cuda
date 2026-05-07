@@ -89,6 +89,11 @@ class OHLCBacktestConfig:
     trail_arm_atr: float = 0.0
     trail_distance_atr: float = 1.0
 
+    # Volatility guard: skip entry when the entry bar's range (H-L) already
+    # exceeds `vol_guard_mult * sl_distance`. Prevents dead-on-arrival trades
+    # during news spikes. Set to 0.0 to disable.
+    vol_guard_mult: float = 1.5
+
     cost: CostModel = field(default_factory=CostModel)
     risk: Optional[RiskConfig] = None
 
@@ -231,6 +236,16 @@ def run_backtest_ohlc(
 
     open_idea: Optional[_OpenIdea] = None
     next_idea_id = 0
+
+    # Diagnostic counters for funnel analysis.
+    _diag_signal_bars = 0
+    _diag_already_in = 0
+    _diag_session_block = 0
+    _diag_risk_block = 0
+    _diag_stop_block = 0
+    _diag_edge_block = 0
+    _diag_size_zero = 0
+    _diag_entries = 0
 
     def book_exit_costs(i_close: int, side: int, abs_size: float, sess_i: str) -> None:
         nonlocal cum_cost
@@ -383,13 +398,21 @@ def run_backtest_ohlc(
         # --------------------------------------------------------------
         # 2) Flat? Check entry from prior bar's signal.
         # --------------------------------------------------------------
+        if i > 0 and sig[i - 1] != 0 and np.isfinite(a[i - 1]):
+            _diag_signal_bars += 1
+            if open_idea is not None:
+                _diag_already_in += 1
         if open_idea is None and i > 0 and sig[i - 1] != 0 and np.isfinite(a[i - 1]):
             side = int(sig[i - 1])
             sess_i = sess[i]
 
             session_ok = allowed_sessions is None or sess_i in allowed_sessions
-            risk_ok, _ = risk.can_enter()
+            risk_ok, risk_reason = risk.can_enter()
 
+            if not session_ok:
+                _diag_session_block += 1
+            elif not risk_ok:
+                _diag_risk_block += 1
             if session_ok and risk_ok:
                 entry = float(o[i])
                 tp_dist = cfg.atr_mult_tp * a[i - 1]
@@ -413,8 +436,25 @@ def run_backtest_ohlc(
                     )
                     edge_ok = edge >= required
 
-                if stop_ok and edge_ok:
+                if not stop_ok:
+                    _diag_stop_block += 1
+                elif not edge_ok:
+                    _diag_edge_block += 1
+
+                # Volatility guard: if the entry bar's range already
+                # exceeds the SL distance, the trade is dead on arrival
+                # — intrabar noise will hit the SL before the directional
+                # edge has any chance to play out.
+                if cfg.vol_guard_mult > 0:
+                    bar_range = h[i] - l[i]
+                    vol_ok = bar_range < sl_dist * cfg.vol_guard_mult
+                else:
+                    vol_ok = True
+
+                if stop_ok and edge_ok and vol_ok:
                     sized = risk.size_for_entry(side, entry, sl)
+                    if sized == 0.0:
+                        _diag_size_zero += 1
                     if sized != 0.0:
                         book_entry_costs(i, side, abs(sized), sess_i)
                         entry_price[i] = entry
@@ -439,6 +479,7 @@ def run_backtest_ohlc(
                             ),
                         )
                         next_idea_id += 1
+                        _diag_entries += 1
 
                         # Same-bar TP/SL from open -> close.
                         tp_hit_b = (side == 1 and h[i] >= tp) or (side == -1 and l[i] <= tp)
@@ -491,6 +532,17 @@ def run_backtest_ohlc(
     df_out["drawdown"]    = drawdown
     df_out["layer_count"] = layer_count
     df_out["idea_id"]     = idea_id
+
+    df_out.attrs["_diag"] = {
+        "signal_bars": _diag_signal_bars,
+        "already_in_trade": _diag_already_in,
+        "session_blocked": _diag_session_block,
+        "risk_blocked": _diag_risk_block,
+        "stop_blocked": _diag_stop_block,
+        "edge_blocked": _diag_edge_block,
+        "size_zero": _diag_size_zero,
+        "entries": _diag_entries,
+    }
     return df_out
 
 

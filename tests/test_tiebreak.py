@@ -75,7 +75,7 @@ def test_by_close_lets_favorable_bars_take_tp():
     sig.iloc[15] = 1
     cfg = OHLCBacktestConfig(
         risk_per_trade=0.01, atr_mult_tp=1.0, atr_mult_sl=0.5,
-        same_bar_tiebreak="by_close",
+        same_bar_tiebreak="by_close", vol_guard_mult=0.0,
     )
     bt = run_backtest_ohlc(bars, sig, cfg)
     trades = trade_log_ohlc(bt)
@@ -89,7 +89,7 @@ def test_sl_first_always_picks_stop():
     sig.iloc[15] = 1
     cfg = OHLCBacktestConfig(
         risk_per_trade=0.01, atr_mult_tp=1.0, atr_mult_sl=0.5,
-        same_bar_tiebreak="sl_first",
+        same_bar_tiebreak="sl_first", vol_guard_mult=0.0,
     )
     bt = run_backtest_ohlc(bars, sig, cfg)
     trades = trade_log_ohlc(bt)

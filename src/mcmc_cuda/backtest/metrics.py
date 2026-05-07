@@ -45,6 +45,7 @@ class ExtendedMetrics:
     by_session: dict[str, dict] = field(default_factory=dict)
     by_regime: dict[str, dict] = field(default_factory=dict)
     trade_frequency_per_day: float = float("nan")
+    propfirm_score: float = float("nan")
 
     def to_dict(self) -> dict:
         return {
@@ -53,6 +54,7 @@ class ExtendedMetrics:
             "avg_r_multiple": self.avg_r_multiple,
             "median_r_multiple": self.median_r_multiple,
             "trade_frequency_per_day": self.trade_frequency_per_day,
+            "propfirm_score": self.propfirm_score,
             "by_session": self.by_session,
             "by_regime": self.by_regime,
         }
@@ -148,6 +150,43 @@ def _trade_summary(trades: pd.DataFrame) -> dict:
     )
 
 
+def compute_propfirm_score(m: Metrics) -> float:
+    """Composite score for ranking backtest runs by prop-firm suitability.
+
+    Weights:
+      Sharpe      (0.30) — risk-adjusted return, the gold standard
+      Calmar      (0.20) — return relative to max drawdown
+      PF          (0.20) — gross win / gross loss
+      MaxDD pen   (0.20) — penalty for deep drawdowns (prop-firm killer)
+      WinRate adj (0.10) — bonus for > 50% win rate (psychological edge)
+
+    Returns a single float; higher = better.  Negative scores are common
+    for losing strategies.  A passable prop-firm run typically scores > 0.5.
+    """
+    sharpe_component = min(max(m.sharpe, -2.0), 3.0) * 0.30
+
+    calmar_val = m.calmar if np.isfinite(m.calmar) else 0.0
+    calmar_component = min(max(calmar_val, -2.0), 5.0) * 0.20
+
+    pf_val = min(m.profit_factor, 3.0) if np.isfinite(m.profit_factor) else 0.0
+    pf_component = (pf_val - 1.0) * 0.20  # centered at 1.0 (breakeven)
+
+    # MaxDD penalty: linearly penalize drawdowns beyond -2%.  At -10% the
+    # penalty is max (-0.20).  This is the most important guard.
+    dd_pct = abs(m.max_drawdown)  # 0.069 for 6.9% DD
+    dd_penalty = -min(max(dd_pct - 0.02, 0.0), 0.10) * 2.0 * 0.20
+
+    wr_bonus = (m.win_rate - 0.50) * 0.10
+
+    score = sharpe_component + calmar_component + pf_component + dd_penalty + wr_bonus
+
+    # Bankrupt strategies get a massive penalty.
+    if m.bankrupt:
+        score -= 5.0
+
+    return float(score)
+
+
 def compute_extended(
     bt: pd.DataFrame,
     trades: pd.DataFrame,
@@ -187,12 +226,15 @@ def compute_extended(
         for label, group in tr.groupby("_regime"):
             by_regime[str(label)] = _trade_summary(group.drop(columns=["_regime"]))
 
+    pf_score = compute_propfirm_score(headline)
+
     return ExtendedMetrics(
         headline=headline,
         costs_pct_gross=costs_pct,
         avg_r_multiple=avg_r,
         median_r_multiple=med_r,
         trade_frequency_per_day=freq_per_day,
+        propfirm_score=pf_score,
         by_session=by_session,
         by_regime=by_regime,
     )

@@ -20,3 +20,9 @@ load_dotenv(ROOT / ".env", override=False)
 
 SYMBOL = os.environ.get("MCMC_SYMBOL", "XAUUSD")
 DEFAULT_TIMEFRAME = os.environ.get("MCMC_TIMEFRAME", "M15")
+
+# Smart artifact management: keep only the top-K runs by prop-firm score.
+# Anything outside the top-K (by score) is deleted on every run to keep
+# the artifacts/ directory navigable as a portfolio surface, not a junk drawer.
+LEADERBOARD_PATH = ARTIFACTS_DIR / "leaderboard.json"
+TOP_K_ARTIFACTS = 3

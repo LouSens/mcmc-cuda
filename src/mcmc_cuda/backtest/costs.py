@@ -34,6 +34,17 @@ DEFAULT_SPREAD_BY_SESSION: dict[str, float] = {
     "dead":    50.0,    # 21:00 UTC pre-roll
 }
 
+# Low-friction profile: tight ECN/raw-spread broker, low commission. Used by
+# default in scripts/run_backtest.py so M15 strategies aren't strangled by
+# defaults calibrated for retail standard accounts.
+LOW_FRICTION_SPREAD_BY_SESSION: dict[str, float] = {
+    "overlap":  6.0,
+    "london":   8.0,
+    "ny":      10.0,
+    "asia":    18.0,
+    "dead":    22.0,
+}
+
 
 @dataclass
 class CostModel:
@@ -141,4 +152,26 @@ class CostModel:
         """
         return self.min_edge_cost_multiple * self.total_expected_trade_cost_price(
             side, holding_bars, session
+        )
+
+    # ------------------------------------------------------------------
+    # Presets
+    # ------------------------------------------------------------------
+    @classmethod
+    def low_friction(cls, bars_per_day: int = 96) -> "CostModel":
+        """Tight-spread, low-slippage, low-swap broker profile.
+
+        Calibrated for an ECN / raw-spread XAUUSD account suitable for
+        algorithmic M15 trading. This is the default the production
+        backtest script uses; the dataclass defaults remain a more
+        conservative retail profile so unit tests stay deterministic.
+        """
+        return cls(
+            spread_points=10.0,
+            slippage_points=1.5,
+            swap_long_per_day=-2.5,
+            swap_short_per_day=0.8,
+            bars_per_day=bars_per_day,
+            spread_by_session=dict(LOW_FRICTION_SPREAD_BY_SESSION),
+            min_edge_cost_multiple=1.2,
         )

@@ -31,10 +31,28 @@ def test_size_for_entry_capped_by_idea_budget():
 
 
 def test_can_enter_blocks_after_daily_loss_cap():
-    rs = RiskState(cfg=RiskConfig(max_daily_loss=0.03), starting_equity=10_000.0)
+    # Loose total-DD cap so the daily-loss rule is the predicate under test;
+    # otherwise the total-drawdown breaker can fire first and mask it.
+    rs = RiskState(
+        cfg=RiskConfig(max_daily_loss=0.03, max_total_drawdown=0.50),
+        starting_equity=10_000.0,
+    )
     rs.on_new_bar(date(2024, 6, 3), 9_500.0)  # -5% intraday
     ok, reason = rs.can_enter()
     assert not ok and reason == "daily_loss_cap"
+
+
+def test_total_drawdown_breach_is_sticky():
+    # Once total DD is breached, can_enter must keep blocking even if
+    # equity recovers above the breach threshold (prop-firm rule).
+    rs = RiskState(cfg=RiskConfig(max_total_drawdown=0.05), starting_equity=10_000.0)
+    rs.on_new_bar(date(2024, 6, 3), 10_000.0)
+    rs.on_new_bar(date(2024, 6, 3), 9_400.0)  # -6% from peak -> breach
+    ok, reason = rs.can_enter()
+    assert not ok and reason == "total_drawdown_breached"
+    rs.on_new_bar(date(2024, 6, 4), 10_500.0)  # full recovery
+    ok, reason = rs.can_enter()
+    assert not ok and reason == "total_drawdown_breached"
 
 
 def test_consecutive_losses_trigger_cooldown():
